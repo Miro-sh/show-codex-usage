@@ -18,9 +18,10 @@
       </header>
       <section class="card" aria-live="polite">
         <div class="gauge" role="img" aria-label="Quota restant">
-          <div class="ticks" aria-hidden="true"></div>
-          <div id="needle" class="needle"></div>
-          <div class="hub" aria-hidden="true"></div>
+          <svg class="gauge-arc" viewBox="0 0 280 150" aria-hidden="true">
+            <path class="gauge-track" d="M 20 140 A 120 120 0 0 1 260 140" pathLength="100" />
+            <path id="gauge-fill" class="gauge-fill" d="M 20 140 A 120 120 0 0 1 260 140" pathLength="100" />
+          </svg>
           <div class="reading"><strong id="remaining">—</strong><span>restant</span></div>
         </div>
         <div class="details">

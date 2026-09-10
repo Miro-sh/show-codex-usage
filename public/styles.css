@@ -1,4 +1,4 @@
-:root { --gauge-color: #35c98a; font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #eef2f7; background: #0b1018; }
+:root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #eef2f7; background: #0b1018; }
 * { box-sizing: border-box; }
 body { min-height: 100vh; margin: 0; display: grid; place-items: center; background: radial-gradient(circle at 50% 5%, #24334a, #0b1018 55%); }
 main { width: min(720px, calc(100% - 32px)); }
@@ -8,12 +8,10 @@ h1 { margin: 0; font-size: clamp(2rem, 6vw, 3.4rem); letter-spacing: -.05em; }
 button { border: 1px solid #55657a; border-radius: 999px; background: transparent; color: inherit; padding: .65rem 1rem; cursor: pointer; }
 button:hover:not(:disabled) { border-color: #d9e2ef; } button:disabled { opacity: .55; cursor: wait; }
 .card { display: grid; grid-template-columns: minmax(300px, 1fr) 1fr; gap: 28px; padding: 28px; border: 1px solid #2f3c4e; border-radius: 24px; background: rgba(19, 28, 41, .86); box-shadow: 0 24px 70px rgba(0, 0, 0, .25); }
-.gauge { position: relative; aspect-ratio: 1.75 / 1; overflow: hidden; }
-.gauge::before { content: ''; position: absolute; inset: 0 0 -100% 0; border: 18px solid #263344; border-bottom-color: transparent; border-radius: 50%; }
-.gauge::after { content: ''; position: absolute; inset: 0 0 -100% 0; border: 18px solid var(--gauge-color); border-bottom-color: transparent; border-radius: 50%; clip-path: inset(0 0 50% 0); transition: border-color .3s; }
-.ticks { position: absolute; inset: 7% 7% -93%; border-radius: 50%; background: repeating-conic-gradient(from 270deg, #9dadbd 0 1deg, transparent 1deg 9deg); mask: radial-gradient(transparent 0 65%, #000 66% 68%, transparent 69%); }
-.needle { position: absolute; left: 50%; bottom: 0; width: 3px; height: 78%; transform-origin: bottom; transform: rotate(var(--rotation, -90deg)); background: var(--gauge-color); transition: transform .65s cubic-bezier(.2,.8,.2,1), background-color .3s; }
-.hub { position: absolute; width: 16px; aspect-ratio: 1; border-radius: 50%; left: calc(50% - 8px); bottom: -8px; background: #e7edf4; }
+.gauge { position: relative; aspect-ratio: 1.75 / 1; }
+.gauge-arc { width: 100%; height: 100%; overflow: visible; }
+.gauge-track, .gauge-fill { fill: none; stroke-width: 18; }
+.gauge-track { stroke: #263344; }.gauge-fill { stroke: hsl(120 72% 52%); stroke-dasharray: 100 100; transition: stroke .45s ease, stroke-dasharray .65s cubic-bezier(.2,.8,.2,1); }
 .reading { position: absolute; inset: auto 0 3px; display: grid; justify-items: center; }
 .reading strong { font-size: 2.7rem; letter-spacing: -.08em; }.reading span { color: #9aacbf; font-size: .86rem; }
 .details { align-self: center; }.details p { margin-top: 0; color: #c5d0dd; } dl { margin: 24px 0 0; } dl div { padding: 13px 0; border-top: 1px solid #314055; } dt { color: #9aacbf; font-size: .8rem; } dd { margin: 5px 0 0; font-size: .95rem; }

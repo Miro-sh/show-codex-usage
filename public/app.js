@@ -1,5 +1,5 @@
 const remaining = document.querySelector('#remaining');
-const needle = document.querySelector('#needle');
+const gaugeFill = document.querySelector('#gauge-fill');
 const status = document.querySelector('#status');
 const reset = document.querySelector('#reset');
 const weekly = document.querySelector('#weekly');
@@ -15,8 +15,9 @@ function formatDate(value) {
 function setGauge(value) {
   const percent = Math.round(value);
   remaining.textContent = `${percent}%`;
-  needle.style.setProperty('--rotation', `${-90 + percent * 1.8}deg`);
-  document.documentElement.style.setProperty('--gauge-color', percent <= 10 ? '#ef4444' : percent <= 25 ? '#f59e0b' : '#35c98a');
+  // 0 % is red and 100 % is green, with every intermediate value moving through the hue range.
+  gaugeFill.style.stroke = `hsl(${percent * 1.2} 72% 52%)`;
+  gaugeFill.style.strokeDasharray = `${percent} 100`;
 }
 
 async function loadUsage() {
