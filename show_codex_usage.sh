@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
 set -euo pipefail
+umask 077
 
 VERSION="1.1.1"
 
@@ -14,6 +15,10 @@ if [[ $# -ge 1 ]]; then
       printf "%s\n" "$VERSION"
       exit 0
       ;;
+    help|--help|-h)
+      printf 'Usage: %s [show|switch|--version] [auth-pool.json]\n' "${0##*/}"
+      exit 0
+      ;;
     switch)
       MODE="switch"
       shift
@@ -25,21 +30,31 @@ if [[ $# -ge 1 ]]; then
   esac
 fi
 
-if [[ $# -ge 1 ]]; then
+if [[ $# -gt 1 || ( $# -eq 1 && "$1" == -* ) ]]; then
+  echo "Error: invalid arguments; use --help." >&2
+  exit 1
+fi
+if [[ $# -eq 1 ]]; then
   AUTH_FILE="$1"
+fi
+if [[ "$MODE" == "switch" && ( ! -t 0 || ! -t 1 ) ]]; then
+  echo "Error: switch requires an interactive terminal." >&2
+  exit 1
 fi
 
 POOL_FILE="$AUTH_FILE"
 USAGE_URL="https://chatgpt.com/backend-api/wham/usage"
 
-RED='\033[31m'
-GREEN='\033[32m'
-YELLOW='\033[33m'
-BLUE='\033[34m'
-BOLD='\033[1m'
-DIM='\033[2m'
-RESET='\033[0m'
-REVERSE='\033[7m'
+RED=$'\033[31m'
+GREEN=$'\033[32m'
+YELLOW=$'\033[33m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
+REVERSE=$'\033[7m'
+if [[ ! -t 1 || -n "${NO_COLOR:-}" ]]; then
+  RED='' GREEN='' YELLOW='' BOLD='' DIM='' RESET='' REVERSE=''
+fi
 
 if ! command -v jq >/dev/null 2>&1; then
   echo "Error: jq is required but not installed." >&2
@@ -52,10 +67,30 @@ if ! command -v curl >/dev/null 2>&1; then
 fi
 
 cleanup() {
-  [[ -n "${TMP_UPSERT_FILE:-}" && -f "${TMP_UPSERT_FILE:-}" ]] && rm -f "$TMP_UPSERT_FILE"
-  [[ -n "${RESULTS_FILE:-}" && -f "${RESULTS_FILE:-}" ]] && rm -f "$RESULTS_FILE"
+  [[ -z "${TMP_UPSERT_FILE:-}" ]] || rm -f -- "$TMP_UPSERT_FILE"
+  [[ -z "${TMP_SWITCH_FILE:-}" ]] || rm -f -- "$TMP_SWITCH_FILE"
+  [[ -z "${WORK_DIR:-}" ]] || rm -rf -- "$WORK_DIR"
+  [[ -z "${POOL_LOCK:-}" ]] || rmdir -- "$POOL_LOCK"
+  return 0
 }
 trap cleanup EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+
+WORK_DIR="$(mktemp -d)"
+
+# Reject ambiguous file targets before reading or replacing credentials.
+for auth_path in "$CURRENT_AUTH_FILE" "$POOL_FILE"; do
+  if [[ -L "$auth_path" || ( -e "$auth_path" && ! -f "$auth_path" ) ]]; then
+    echo "Error: auth paths must be regular files, not symlinks." >&2
+    exit 1
+  fi
+done
+if [[ "$CURRENT_AUTH_FILE" == "$POOL_FILE" || "$CURRENT_AUTH_FILE" -ef "$POOL_FILE" ]]; then
+  echo "Error: current auth and pool must be different files." >&2
+  exit 1
+fi
+
 
 get_auth_mode() {
   jq -r '.auth_mode // "apikey"' <<<"$1"
@@ -94,7 +129,11 @@ get_auth_label() {
       if [[ -z "$key" ]]; then
         echo "unknown-apikey"
       else
-        printf "apikey:%s...%s" "${key:0:8}" "${key: -4}"
+        if (( ${#key} > 8 )); then
+          printf "apikey:...%s" "${key: -4}"
+        else
+          printf "apikey:[redacted]"
+        fi
       fi
       ;;
     *)
@@ -110,43 +149,51 @@ is_current_auth() {
   [[ -n "$id" && "$id" == "$CURRENT_AUTH_IDENTITY" ]]
 }
 
-validate_current_auth_file() {
-  jq -e '
-    type == "object"
-    and (
-      (
-        (.auth_mode // "apikey") == "chatgpt"
-        and .tokens
-        and .tokens.account_id
-        and (.tokens.account_id | type == "string")
-        and (.tokens.account_id | length > 0)
-      )
-      or
-      (
-        (.auth_mode // "apikey") == "apikey"
-        and .OPENAI_API_KEY
-        and (.OPENAI_API_KEY | type == "string")
-        and (.OPENAI_API_KEY | length > 0)
-      )
-    )
-  ' "$CURRENT_AUTH_FILE" > /dev/null
-}
-
+# Validate the complete document before any persistent modification.
+AUTH_SCHEMA='
+  def safe_string: type == "string" and length > 0 and
+    (test("[\u0000-\u001f\u007f]") | not);
+  def valid_auth:
+    type == "object" and (
+      ((.auth_mode // "apikey") == "chatgpt" and
+        (.tokens | type == "object") and
+        (.tokens.account_id | safe_string) and
+        (.tokens.access_token == null or
+          (.tokens.access_token | safe_string))) or
+      ((.auth_mode // "apikey") == "apikey" and
+        (.OPENAI_API_KEY | safe_string))
+    );
+'
 if [[ ! -f "$CURRENT_AUTH_FILE" ]]; then
   echo "Error: current auth file not found: $CURRENT_AUTH_FILE" >&2
   exit 1
 fi
+cp -- "$CURRENT_AUTH_FILE" "$WORK_DIR/current.json"
+jq -e -s "$AUTH_SCHEMA length == 1 and (.[0] | valid_auth)" \
+  "$WORK_DIR/current.json" >/dev/null || {
+  echo "Error: invalid current auth document." >&2
+  exit 1
+}
 
-if [[ ! -f "$POOL_FILE" ]]; then
-  echo '[]' > "$POOL_FILE"
+if ! mkdir -- "${POOL_FILE}.lock" 2>/dev/null; then
+  echo "Error: pool is locked or its directory is unavailable: ${POOL_FILE}.lock" >&2
+  exit 1
+fi
+POOL_LOCK="${POOL_FILE}.lock"
+if [[ -f "$POOL_FILE" ]]; then
+  jq -e -s "$AUTH_SCHEMA length == 1 and (.[0] | type == \"array\" and all(.[]; valid_auth))" \
+    "$POOL_FILE" >/dev/null || {
+    echo "Error: invalid auth pool document." >&2
+    exit 1
+  }
+  cp -- "$POOL_FILE" "$WORK_DIR/pool.json"
+else
+  printf '[]\n' > "$WORK_DIR/pool.json"
 fi
 
-validate_current_auth_file
-jq -e 'type == "array"' "$POOL_FILE" > /dev/null
+TMP_UPSERT_FILE="$(mktemp "${POOL_FILE}.tmp.XXXXXX")"
 
-TMP_UPSERT_FILE="$(mktemp)"
-
-jq --slurpfile new_auth "$CURRENT_AUTH_FILE" '
+jq --slurpfile new_auth "$WORK_DIR/current.json" '
   def auth_identity($a):
     if (($a.auth_mode // "apikey")) == "chatgpt" then
       ($a.tokens.account_id // "")
@@ -171,13 +218,15 @@ jq --slurpfile new_auth "$CURRENT_AUTH_FILE" '
     else
       . + [$new]
     end
-' "$POOL_FILE" > "$TMP_UPSERT_FILE"
+' "$WORK_DIR/pool.json" > "$TMP_UPSERT_FILE"
 
-mv "$TMP_UPSERT_FILE" "$POOL_FILE"
+cp -- "$TMP_UPSERT_FILE" "$WORK_DIR/pool.json"
+mv -f -- "$TMP_UPSERT_FILE" "$POOL_FILE"
+rmdir -- "$POOL_LOCK"
+unset POOL_LOCK
 unset TMP_UPSERT_FILE
 
-CURRENT_AUTH_RAW="$(cat "$CURRENT_AUTH_FILE")"
-CURRENT_AUTH_MODE="$(get_auth_mode "$CURRENT_AUTH_RAW")"
+CURRENT_AUTH_RAW="$(cat "$WORK_DIR/current.json")"
 CURRENT_AUTH_IDENTITY="$(get_auth_identity "$CURRENT_AUTH_RAW")"
 
 if [[ ! -f "$AUTH_FILE" ]]; then
@@ -186,7 +235,7 @@ if [[ ! -f "$AUTH_FILE" ]]; then
 fi
 
 is_number() {
-  [[ "${1:-}" =~ ^[0-9]+$ ]]
+  [[ "${1:-}" =~ ^(0|[1-9][0-9]{0,10})$ ]]
 }
 
 parse_to_epoch() {
@@ -263,6 +312,7 @@ format_reset_at() {
     return
   fi
 
+  is_number "$epoch" || { echo "-"; return; }
   abs="$(format_abs_time "$epoch")"
   rel="$(format_relative_time "$epoch")"
   echo "${rel} (${abs})"
@@ -321,13 +371,14 @@ http_error_text() {
     500) echo "HTTP 500 Internal Server Error" ;;
     502) echo "HTTP 502 Bad Gateway" ;;
     503) echo "HTTP 503 Service Unavailable" ;;
+    000) echo "Network error or request timed out" ;;
     *) echo "HTTP $code" ;;
   esac
 }
 
 fetch_usage_for_account() {
   local raw_account="$1"
-  local auth_mode identity display_name is_current
+  local auth_mode display_name is_current
   local access_token account_id email plan_type limit_reached
   local primary_used primary_reset secondary_used secondary_reset
   local primary_remaining secondary_remaining
@@ -336,7 +387,6 @@ fetch_usage_for_account() {
   local response_body http_code tmp_body
 
   auth_mode="$(get_auth_mode "$raw_account")"
-  identity="$(get_auth_identity "$raw_account")"
   display_name="$(get_auth_label "$raw_account")"
   is_current="false"
   is_current_auth "$raw_account" && is_current="true"
@@ -345,13 +395,11 @@ fetch_usage_for_account() {
     jq -n \
       --arg auth_mode "$auth_mode" \
       --arg account_id "$display_name" \
-      --arg identity "$identity" \
       --arg is_current "$is_current" \
-      --arg raw_auth "$(jq -c . <<<"$raw_account")" \
+      --slurpfile raw_auth "$WORK_DIR/account.json" \
       '{
         auth_mode: $auth_mode,
         account_id: $account_id,
-        identity: $identity,
         is_current: ($is_current == "true"),
         email: $account_id,
         plan_type: "apikey",
@@ -362,7 +410,7 @@ fetch_usage_for_account() {
         secondary_remaining: "-",
         secondary_reset_fmt: "-",
         query_error: "usage check skipped for apikey auth",
-        raw_auth: ($raw_auth | fromjson)
+        raw_auth: $raw_auth[0]
       }'
     return
   fi
@@ -374,13 +422,11 @@ fetch_usage_for_account() {
     jq -n \
       --arg auth_mode "$auth_mode" \
       --arg account_id "$account_id" \
-      --arg identity "$identity" \
       --arg is_current "$is_current" \
-      --arg raw_auth "$(jq -c . <<<"$raw_account")" \
+      --slurpfile raw_auth "$WORK_DIR/account.json" \
       '{
         auth_mode: $auth_mode,
         account_id: $account_id,
-        identity: $identity,
         is_current: ($is_current == "true"),
         email: $account_id,
         plan_type: "unknown",
@@ -391,38 +437,22 @@ fetch_usage_for_account() {
         secondary_remaining: "-",
         secondary_reset_fmt: "-",
         query_error: "missing access_token",
-        raw_auth: ($raw_auth | fromjson)
+        raw_auth: $raw_auth[0]
       }'
     return
   fi
 
-  tmp_body="$(mktemp)"
-  http_code="$(
-    curl -sS \
-      -o "$tmp_body" \
-      -w '%{http_code}' \
-      "$USAGE_URL" \
-      -H 'accept: */*' \
-      -H 'accept-language: en-GB,en;q=0.9,zh-CN;q=0.8,zh;q=0.7,en-US;q=0.6,ja;q=0.5' \
-      -H "authorization: Bearer $access_token" \
-      -H 'priority: u=1, i' \
-      -H 'referer: https://chatgpt.com/codex/settings/usage' \
-      -H 'sec-ch-ua: "Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"' \
-      -H 'sec-ch-ua-arch: "arm"' \
-      -H 'sec-ch-ua-bitness: "64"' \
-      -H 'sec-ch-ua-full-version: "146.0.7680.80"' \
-      -H 'sec-ch-ua-full-version-list: "Chromium";v="146.0.7680.80", "Not-A.Brand";v="24.0.0.0", "Google Chrome";v="146.0.7680.80"' \
-      -H 'sec-ch-ua-mobile: ?0' \
-      -H 'sec-ch-ua-model: ""' \
-      -H 'sec-ch-ua-platform: "macOS"' \
-      -H 'sec-ch-ua-platform-version: "26.3.1"' \
-      -H 'sec-fetch-dest: empty' \
-      -H 'sec-fetch-mode: cors' \
-      -H 'sec-fetch-site: same-origin' \
-      -H 'user-agent: Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36' \
-      -H 'x-openai-target-path: /backend-api/wham/usage' \
-      || echo "000"
-  )"
+  tmp_body="$WORK_DIR/response.json"
+  # Headers travel through stdin, never through the process argument list.
+  # -q disables ~/.curlrc; do not follow redirects with credentials.
+  if ! http_code="$(
+    printf 'Authorization: Bearer %s\nChatGPT-Account-Id: %s\n' "$access_token" "$account_id" |
+      curl -q -sS --proto '=https' --connect-timeout 10 --max-time 30 \
+        --max-filesize 1048576 -o "$tmp_body" -w '%{http_code}' \
+        -H @- -H 'accept: application/json' "$USAGE_URL"
+  )"; then
+    http_code="000"
+  fi
   response_body="$(cat "$tmp_body" 2>/dev/null || true)"
   rm -f "$tmp_body"
 
@@ -430,14 +460,12 @@ fetch_usage_for_account() {
     jq -n \
       --arg auth_mode "$auth_mode" \
       --arg account_id "$account_id" \
-      --arg identity "$identity" \
       --arg is_current "$is_current" \
       --arg query_error "$(http_error_text "$http_code")" \
-      --arg raw_auth "$(jq -c . <<<"$raw_account")" \
+      --slurpfile raw_auth "$WORK_DIR/account.json" \
       '{
         auth_mode: $auth_mode,
         account_id: $account_id,
-        identity: $identity,
         is_current: ($is_current == "true"),
         email: $account_id,
         plan_type: "unknown",
@@ -448,22 +476,20 @@ fetch_usage_for_account() {
         secondary_remaining: "-",
         secondary_reset_fmt: "-",
         query_error: $query_error,
-        raw_auth: ($raw_auth | fromjson)
+        raw_auth: $raw_auth[0]
       }'
     return
   fi
 
-  if [[ -z "$response_body" ]] || ! jq -e . >/dev/null 2>&1 <<<"$response_body"; then
+  if [[ -z "$response_body" ]] || ! jq -e 'type == "object"' >/dev/null 2>&1 <<<"$response_body"; then
     jq -n \
       --arg auth_mode "$auth_mode" \
       --arg account_id "$account_id" \
-      --arg identity "$identity" \
       --arg is_current "$is_current" \
-      --arg raw_auth "$(jq -c . <<<"$raw_account")" \
+      --slurpfile raw_auth "$WORK_DIR/account.json" \
       '{
         auth_mode: $auth_mode,
         account_id: $account_id,
-        identity: $identity,
         is_current: ($is_current == "true"),
         email: $account_id,
         plan_type: "unknown",
@@ -474,7 +500,7 @@ fetch_usage_for_account() {
         secondary_remaining: "-",
         secondary_reset_fmt: "-",
         query_error: "invalid response body",
-        raw_auth: ($raw_auth | fromjson)
+        raw_auth: $raw_auth[0]
       }'
     return
   fi
@@ -539,7 +565,6 @@ fetch_usage_for_account() {
   jq -n \
     --arg auth_mode "$auth_mode" \
     --arg account_id "$account_id" \
-    --arg identity "$identity" \
     --arg is_current "$is_current" \
     --arg email "$email" \
     --arg plan_type "$plan_type" \
@@ -549,11 +574,10 @@ fetch_usage_for_account() {
     --arg primary_reset_fmt "$primary_reset_fmt" \
     --arg secondary_remaining "$secondary_remaining" \
     --arg secondary_reset_fmt "$secondary_reset_fmt" \
-    --arg raw_auth "$(jq -c . <<<"$raw_account")" \
+    --slurpfile raw_auth "$WORK_DIR/account.json" \
     '{
       auth_mode: $auth_mode,
       account_id: $account_id,
-      identity: $identity,
       is_current: ($is_current == "true"),
       email: $email,
       plan_type: $plan_type,
@@ -563,20 +587,29 @@ fetch_usage_for_account() {
       primary_reset_fmt: $primary_reset_fmt,
       secondary_remaining: $secondary_remaining,
       secondary_reset_fmt: $secondary_reset_fmt,
-      raw_auth: ($raw_auth | fromjson)
+      raw_auth: $raw_auth[0]
     }'
 }
 
 build_results() {
-  RESULTS_FILE="$(mktemp)"
-  jq -c '.[]' "$AUTH_FILE" | while IFS= read -r account; do
+  RESULTS_FILE="$WORK_DIR/results.jsonl"
+  : > "$RESULTS_FILE"
+  jq -c '.[]' "$WORK_DIR/pool.json" | while IFS= read -r account; do
+    printf '%s\n' "$account" > "$WORK_DIR/account.json"
     fetch_usage_for_account "$account" >> "$RESULTS_FILE"
     echo >> "$RESULTS_FILE"
   done
 }
 
 sort_results_to_json() {
-  jq -s 'sort_by((if .is_current then 0 else 1 end), .primary_remaining_num, .email)' "$RESULTS_FILE"
+  jq -s '
+    map(with_entries(
+      if .key != "raw_auth" and (.value | type) == "string" then
+        .value |= gsub("[\u0000-\u001f\u007f-\u009f]"; "?")
+      else . end
+    ))
+    | sort_by((if .is_current then 0 else 1 end), .primary_remaining_num, .email)
+  ' "$RESULTS_FILE"
 }
 
 render_show_mode() {
@@ -622,8 +655,8 @@ render_show_mode() {
       printf "Rate Limit: ${GREEN}%s${RESET}\n" "$limit_reached"
     fi
 
-    printf "  5h remaining: %b  reset at: %s\n" "$primary_remaining_colored" "$primary_reset_fmt"
-    printf "  1w remaining: %b  reset at: %s\n" "$secondary_remaining_colored" "$secondary_reset_fmt"
+    printf "  5h remaining: %s  reset at: %s\n" "$primary_remaining_colored" "$primary_reset_fmt"
+    printf "  1w remaining: %s  reset at: %s\n" "$secondary_remaining_colored" "$secondary_reset_fmt"
     printf "\n"
   done
 }
@@ -676,9 +709,9 @@ draw_switch_ui() {
     fi
 
     if [[ "$idx" -eq "$selected" ]]; then
-      printf "${REVERSE}%b${RESET}\n" "$line"
+      printf "${REVERSE}%s${RESET}\n" "$line"
     else
-      printf "%b\n" "$line"
+      printf "%s\n" "$line"
     fi
   done
 
@@ -701,7 +734,10 @@ switch_mode() {
   while true; do
     draw_switch_ui "$selected" "$sorted_json"
 
-    IFS= read -rsn1 key || true
+    if ! IFS= read -rsn1 key; then
+      printf "\nCancelled (input closed).\n"
+      break
+    fi
 
     if [[ "$key" == "q" || "$key" == "Q" ]]; then
       printf "\nCancelled.\n"
@@ -713,11 +749,15 @@ switch_mode() {
       printf "\033[H\033[J"
       printf "Switching current account...\n"
 
-      jq '.raw_auth' <<<"$item" > "$CURRENT_AUTH_FILE"
+      if [[ -L "$CURRENT_AUTH_FILE" ]] || ! cmp -s -- "$CURRENT_AUTH_FILE" "$WORK_DIR/current.json"; then
+        echo "Error: current auth changed while selecting; retry." >&2
+        exit 1
+      fi
+      TMP_SWITCH_FILE="$(mktemp "${CURRENT_AUTH_FILE}.tmp.XXXXXX")"
+      jq '.raw_auth' <<<"$item" > "$TMP_SWITCH_FILE"
+      mv -f -- "$TMP_SWITCH_FILE" "$CURRENT_AUTH_FILE"
+      unset TMP_SWITCH_FILE
 
-      CURRENT_AUTH_RAW="$(cat "$CURRENT_AUTH_FILE")"
-      CURRENT_AUTH_MODE="$(get_auth_mode "$CURRENT_AUTH_RAW")"
-      CURRENT_AUTH_IDENTITY="$(get_auth_identity "$CURRENT_AUTH_RAW")"
       target_label="$(jq -r '.email' <<<"$item")"
 
       printf "${GREEN}${BOLD}Switched.${RESET}\n"
@@ -727,13 +767,13 @@ switch_mode() {
     fi
 
     if [[ "$key" == $'\x1b' ]]; then
-      IFS= read -rsn2 key || true
+      IFS= read -rsn2 -t 1 key || true
       case "$key" in
         "[A")
-          (( selected > 0 )) && selected=$((selected - 1))
+          if (( selected > 0 )); then selected=$((selected - 1)); fi
           ;;
         "[B")
-          (( selected < count - 1 )) && selected=$((selected + 1))
+          if (( selected < count - 1 )); then selected=$((selected + 1)); fi
           ;;
       esac
     fi

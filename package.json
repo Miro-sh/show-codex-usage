@@ -1,0 +1,13 @@
+{
+  "name": "show-codex-usage",
+  "version": "2.0.0",
+  "private": true,
+  "description": "A small local dashboard for a quota API.",
+  "scripts": {
+    "start": "node server.mjs",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

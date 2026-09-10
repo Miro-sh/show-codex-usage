@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="fr">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Quota</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <main>
+      <header>
+        <div>
+          <p class="eyebrow">Usage</p>
+          <h1>Quota restant</h1>
+        </div>
+        <button id="refresh" type="button">Actualiser</button>
+      </header>
+      <section class="card" aria-live="polite">
+        <div class="gauge" role="img" aria-label="Quota restant">
+          <div class="ticks" aria-hidden="true"></div>
+          <div id="needle" class="needle"></div>
+          <div class="hub" aria-hidden="true"></div>
+          <div class="reading"><strong id="remaining">—</strong><span>restant</span></div>
+        </div>
+        <div class="details">
+          <p id="status">Chargement du quota…</p>
+          <dl>
+            <div><dt>Fenêtre courte</dt><dd id="reset">—</dd></div>
+            <div><dt>Fenêtre longue</dt><dd id="weekly">—</dd></div>
+            <div><dt>Forfait</dt><dd id="plan">—</dd></div>
+          </dl>
+        </div>
+      </section>
+    </main>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

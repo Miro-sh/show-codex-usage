@@ -1,383 +1,53 @@
-# show-codex-usage
+# Quota Codex
 
-A lightweight local shell tool for inspecting Codex usage across multiple ChatGPT-authenticated accounts and switching the current account without re-authenticating.
+Une petite page locale qui affiche le quota restant et les dates de remise à zéro. Le navigateur ne reçoit jamais la clé de l’API. Le serveur la lit depuis son environnement et l’envoie au service configuré dans l’en-tête `X-API-KEY`.
 
-This tool is built for a very specific but common pain point: the $20 Plus plan is often not enough, while the $200 Pro plan can be overkill. For some users, 2–3 Plus accounts are the practical middle ground. But once you start doing that, account management becomes annoying fast. You forget to monitor usage limits, you hit a window unexpectedly, and switching accounts usually means logging out and logging back into Codex again.
+![Aperçu de la page : une jauge de quota et les informations de remise à zéro](docs/screenshot-placeholder.svg)
 
-`show-codex-usage` fixes that workflow. After you sign into a new account with Codex once, run `scu` and it will automatically add or update that account in `auth-poll.json`. Later, when you run `scu switch`, it simply swaps the selected account entry into `auth.json`. That means no repeated Codex login flow, no unnecessary friction, and a much faster way to rotate between accounts based on actual remaining usage.
+## Démarrer
 
-It reads your local Codex auth files, refreshes an auth pool automatically, queries usage data from the Codex usage endpoint, renders a clean terminal view, and optionally lets you switch the active account through a simple keyboard-driven TUI.
-
-## Quick Install
-
-One-line install for copy/paste:
+Node 20 ou plus récent suffit. Il n’y a aucune dépendance à installer.
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nick-ma/show-codex-usage/main/install.sh | bash && export PATH="$HOME/.local/bin:$PATH" && alias scu='show-codex-usage'
+cp .env.example .env
+# édite .env et renseigne USAGE_API_URL et USAGE_API_KEY
+set -a; source .env; set +a
+npm start
 ```
 
-Then use:
+Ouvre ensuite `http://localhost:3000`.
 
-```bash
-# check usage data for all account profile
-show-codex-usage
-# or
-scu
-
-
-# swtich account auth profile
-scu switch
-```
-
----
-
-## Features
-
-- Show Codex usage for all accounts stored in `auth-poll.json`
-- Automatically upsert the current `auth.json` into the auth pool before every run
-- Highlight the account currently in use
-- Show remaining quota instead of used quota
-- Color-coded remaining usage:
-  - red: `<= 10%`
-  - yellow: `<= 25%`
-  - green: `> 25%`
-- Format reset time as both relative and absolute time
-- Sort accounts by urgency:
-  - current account first
-  - then by lowest `5h remaining`
-- Interactive account switch mode
-  - `↑ / ↓` to move
-  - `Enter` to confirm
-  - `q` to quit
-- Switch the current Codex account by overwriting `~/.codex/auth.json`
-
----
-
-## How it works
-
-This script uses the `access_token` stored in your local Codex auth files and sends a request to:
-
-```bash
-https://chatgpt.com/backend-api/wham/usage
-````
-
-It then parses the response and displays the usage summary for each account in your pool.
-
-Before doing that, it performs an **upsert** from:
-
-```bash
-~/.codex/auth.json
-```
-
-into:
-
-```bash
-~/.codex/auth-poll.json
-```
-
-So your currently active account is always kept in the pool and updated.
-
----
-
-## Requirements
-
-* macOS or Linux
-* `bash`
-* `curl`
-* `jq`
-
-Check dependencies:
-
-```bash
-command -v bash
-command -v curl
-command -v jq
-```
-
-Install `jq` if needed.
-
-### macOS
-
-```bash
-brew install jq
-```
-
-### Ubuntu / Debian
-
-```bash
-sudo apt-get update
-sudo apt-get install -y jq
-```
-
----
-
-## Auth file structure
-
-This script expects local Codex auth files similar to the following.
-
-### `~/.codex/auth.json`
+Le serveur attend une réponse JSON semblable à celle de l’endpoint d’usage Codex :
 
 ```json
 {
-  "auth_mode": "chatgpt",
-  "OPENAI_API_KEY": null,
-  "tokens": {
-    "id_token": "",
-    "access_token": "eyJhbG...",
-    "refresh_token": "rt_xxx...",
-    "account_id": "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
-  },
-  "last_refresh": "2026-03-17T09:20:30.755457Z"
+  "plan_type": "plus",
+  "rate_limit": {
+    "limit_reached": false,
+    "primary_window": { "used_percent": 29, "reset_at": 1730000000 },
+    "secondary_window": { "used_percent": 12, "reset_at": 1730500000 }
+  }
 }
 ```
 
-### `~/.codex/auth-poll.json`
+Il accepte aussi les champs `used_percent`, `reset_at`, `weekly_used_percent` et `weekly_reset_at` à la racine. La jauge représente la fenêtre courte. La couleur passe au jaune sous 25 %, puis au rouge sous 10 %.
 
-```json
-[
-  {
-    "auth_mode": "chatgpt",
-    "OPENAI_API_KEY": null,
-    "tokens": {
-      "id_token": "",
-      "access_token": "eyJhbG...",
-      "refresh_token": "rt_xxx...",
-      "account_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa"
-    },
-    "last_refresh": "2026-03-17T09:20:30.755457Z"
-  },
-  {
-    "auth_mode": "chatgpt",
-    "OPENAI_API_KEY": null,
-    "tokens": {
-      "id_token": "",
-      "access_token": "eyJhbG...",
-      "refresh_token": "rt_xxx...",
-      "account_id": "bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb"
-    },
-    "last_refresh": "2026-03-17T09:20:30.755457Z"
-  }
-]
-```
+## Configuration
 
----
+`USAGE_API_URL` est l’URL complète du service de quota. `USAGE_API_KEY` est transmise au service sous le nom `X-API-KEY`. `PORT` est facultatif et vaut `3000` par défaut.
 
-## Installation
+`.env` est ignoré par Git. Ne mets pas de clé dans `public/`, dans le README, dans les issues ou dans les variables de build qui produisent du JavaScript côté navigateur. Si la clé envoyée dans la demande a déjà été partagée ailleurs, révoque-la et crée-en une autre.
 
-Install with one command:
+Le serveur limite les appels à dix secondes, refuse les redirections de l’API distante et ne met pas les réponses en cache. Il doit rester derrière un réseau de confiance ou une authentification si tu le déploies : l’interface elle-même n’ajoute pas de connexion utilisateur.
+
+## Vérifier
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/nick-ma/show-codex-usage/main/install.sh | bash
+npm test
 ```
 
-The installer will:
+Les tests ne font aucun appel réseau et ne nécessitent pas de clé.
 
-- download the main script to `~/.local/bin/show-codex-usage`
-- ensure `~/.local/bin` is added to your `PATH`
-- add `alias scu='show-codex-usage'` to your shell rc file
+## Scripts historiques
 
-If you want the command to be available immediately in the current shell, run:
-
-```bash
-export PATH="$HOME/.local/bin:$PATH" && alias scu='show-codex-usage'
-```
-
-Or reload your shell rc file:
-
-```bash
-source ~/.zshrc
-```
-
-If you use bash instead of zsh, reload the file the installer updated, or just open a new terminal. Then run:
-
-```bash
-show-codex-usage
-scu
-```
-
----
-
-## Usage
-
-### Show usage
-
-```bash
-show-codex-usage
-```
-
-This uses:
-
-* current auth: `~/.codex/auth.json`
-* auth pool: `~/.codex/auth-poll.json`
-
-You can also specify a custom pool file:
-
-```bash
-show-codex-usage /path/to/auth-poll.json
-```
-
----
-
-### Switch current account
-
-```bash
-show-codex-usage switch
-```
-
-Or with a custom pool file:
-
-```bash
-show-codex-usage switch /path/to/auth-poll.json
-```
-
-Interactive controls:
-
-* `↑` move up
-* `↓` move down
-* `Enter` confirm switch
-* `q` quit without changes
-
-When confirmed, the selected account object from `auth-poll.json` is written to:
-
-```bash
-~/.codex/auth.json
-```
-
----
-
-## Example output
-
-### Show mode
-
-```text
-Codex usage from: /Users/nick/.codex/auth-poll.json
-Current auth: /Users/nick/.codex/auth.json
-
-Account: jaaaa-08908@gmail.com [plus] [Current Using]
-Rate Limit: false
-  5h remaining: 71%  reset at: 4hr 12m (2026-03-17 15:40 UTC)
-  1w remaining: 1%   reset at: 1d 8hr (2026-03-18 19:48 UTC)
-
-Account: nick-998892@gmail.com [plus]
-Rate Limit: false
-  5h remaining: 98%  reset at: 3hr 44m (2026-03-17 15:12 UTC)
-  1w remaining: 73%  reset at: 5d 14hr (2026-03-22 21:26 UTC)
-```
-
-### Switch mode
-
-```text
-Select account to switch (↑/↓ move, Enter confirm, q quit)
-
-> jaaaa-08908@gmail.com [plus] [Current Using]  RL:false  5h:71%  1w:1%
-  nick-998892@gmail.com [plus]                  RL:false  5h:98%  1w:73%
-
-Current auth file: /Users/nick/.codex/auth.json
-Auth pool file: /Users/nick/.codex/auth-poll.json
-```
-
----
-
-## Sorting rules
-
-Accounts are sorted in this order:
-
-1. The current account always appears first
-2. All other accounts are sorted by `5h remaining` ascending
-
-That means the most urgent accounts appear near the top.
-
----
-
-## Output rules
-
-The script displays:
-
-* account email
-* plan type
-* whether rate limit is reached
-* `5h remaining`
-* `1w remaining`
-* reset time in:
-
-  * relative format, such as `1d 3hr`
-  * absolute UTC format, such as `2026-03-18 19:48 UTC`
-
-Color rules:
-
-* red: remaining `<= 10%`
-* yellow: remaining `<= 25%`
-* green: remaining `> 25%`
-
-The current active account is marked as:
-
-```text
-[Current Using]
-```
-
----
-
-## Safety notes
-
-This tool relies on local authentication artifacts and an internal web endpoint. It is intended for personal/local use.
-
-Things to keep in mind:
-
-* the endpoint is not a documented public API
-* response fields may change over time
-* expired tokens will cause query failures
-* switching accounts overwrites `~/.codex/auth.json`
-
-You should back up your auth files if you rely on a specific account setup.
-
-For example:
-
-```bash
-cp ~/.codex/auth.json ~/.codex/auth.json.bak
-cp ~/.codex/auth-poll.json ~/.codex/auth-poll.json.bak
-```
-
----
-
-## Troubleshooting
-
-### `jq is required but not installed`
-
-Install `jq` first.
-
-### `unable to query`
-
-Possible reasons:
-
-* access token has expired
-* endpoint response changed
-* network issue
-* current auth entry is incomplete
-
-### `missing access_token`
-
-The selected auth object does not contain a valid token set.
-
-### arrow keys do not work properly
-
-Make sure you run the script in a normal terminal that supports standard ANSI escape sequences.
-
----
-
-## Suggested file layout
-
-```text
-~/.codex/
-  auth.json
-  auth-poll.json
-
-project/
-  show_codex_usage.sh
-  README.md
-```
-
----
-
-## License
-
-MIT
+`show_codex_usage.sh` et `install.sh` restent dans le dépôt pour l’outil de terminal existant. Leur audit local est disponible dans [AUDIT.md](AUDIT.md).
