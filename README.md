@@ -1,6 +1,6 @@
 # Quota Codex
 
-Une petite page locale qui affiche le quota restant et les dates de remise à zéro. Le navigateur ne reçoit jamais la clé de l’API. Le serveur la lit depuis son environnement et l’envoie au service configuré dans l’en-tête `X-API-KEY`.
+Une petite page locale qui affiche le quota restant et les dates de remise à zéro. Le navigateur ne reçoit jamais les identifiants Codex. Le serveur les lit depuis `~/.codex/auth.json` et interroge l’endpoint d’usage côté serveur.
 
 ![Aperçu de la page : une jauge de quota et les informations de remise à zéro](docs/screenshot-placeholder.svg)
 
@@ -10,12 +10,12 @@ Node 20 ou plus récent suffit. Il n’y a aucune dépendance à installer.
 
 ```bash
 cp .env.example .env
-# édite .env et renseigne USAGE_API_URL et USAGE_API_KEY
+# Renseigne DASHBOARD_API_KEY dans .env, puis charge la configuration.
 set -a; source .env; set +a
 npm start
 ```
 
-Ouvre ensuite `http://localhost:3000`.
+Ouvre ensuite `http://localhost:8000`. Le serveur écoute par défaut sur toutes les interfaces réseau (`0.0.0.0`).
 
 Le serveur attend une réponse JSON semblable à celle de l’endpoint d’usage Codex :
 
@@ -34,9 +34,9 @@ Il accepte aussi les champs `used_percent`, `reset_at`, `weekly_used_percent` et
 
 ## Configuration
 
-`USAGE_API_URL` est l’URL complète du service de quota. `USAGE_API_KEY` est transmise au service sous le nom `X-API-KEY`. `PORT` est facultatif et vaut `3000` par défaut.
+Le serveur utilise par défaut `~/.codex/auth.json` et l’endpoint d’usage Codex. `CODEX_AUTH_FILE` et `USAGE_API_URL` permettent de remplacer ces valeurs. `HOST` et `PORT` valent respectivement `0.0.0.0` et `8000` par défaut. Toutes les routes `/api/*` exigent la valeur de `DASHBOARD_API_KEY` dans l’en-tête `X-API-KEY`.
 
-`.env` est ignoré par Git. Ne mets pas de clé dans `public/`, dans le README, dans les issues ou dans les variables de build qui produisent du JavaScript côté navigateur. Si la clé envoyée dans la demande a déjà été partagée ailleurs, révoque-la et crée-en une autre.
+Ne mets jamais le contenu de `auth.json` dans `public/`, dans le README ou dans du JavaScript côté navigateur.
 
 Le serveur limite les appels à dix secondes, refuse les redirections de l’API distante et ne met pas les réponses en cache. Il doit rester derrière un réseau de confiance ou une authentification si tu le déploies : l’interface elle-même n’ajoute pas de connexion utilisateur.
 
